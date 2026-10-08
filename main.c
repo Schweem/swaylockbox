@@ -181,6 +181,17 @@ void damage_state(struct swaylock_state *state) {
 	}
 }
 
+// Redraw at the start of every minute so the clock stays current
+static void clock_tick(void *data) {
+	struct swaylock_state *state = data;
+	time_t now = time(NULL);
+	struct tm tm;
+	localtime_r(&now, &tm);
+	loop_add_timer(state->eventloop, (60 - tm.tm_sec) * 1000,
+			clock_tick, state);
+	damage_state(state);
+}
+
 static void handle_wl_output_geometry(void *data, struct wl_output *wl_output,
 		int32_t x, int32_t y, int32_t width_mm, int32_t height_mm,
 		int32_t subpixel, const char *make, const char *model,
@@ -1098,7 +1109,7 @@ int main(int argc, char **argv) {
 		.mode = BACKGROUND_MODE_FILL,
 		.font = strdup("sans-serif"),
 		.font_size = 0,
-		.radius = 50,
+		.radius = 100,
 		.thickness = 10,
 		.indicator_x_position = 0,
 		.indicator_y_position = 0,
@@ -1250,6 +1261,8 @@ int main(int argc, char **argv) {
 	loop_add_fd(state.eventloop, get_comm_reply_fd(), POLLIN, comm_in, NULL);
 
 	loop_add_fd(state.eventloop, sigusr_fds[0], POLLIN, term_in, NULL);
+
+	clock_tick(&state);
 
 	struct sigaction sa;
 	sa.sa_handler = do_sigusr;
