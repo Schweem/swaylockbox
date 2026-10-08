@@ -286,10 +286,15 @@ static bool render_frame(struct swaylock_surface *surface) {
 	cairo_restore(cairo);
 
 	if (draw_indicator) {
-		int box_h = arc_radius / 1.8;
+		// One line of text tall, like a terminal input field
+		configure_font_drawing(cairo, state, surface->subpixel, arc_radius);
+		cairo_font_extents_t line;
+		cairo_font_extents(cairo, &line);
+		int pad = 4 * surface->scale;
+		double t = arc_thickness;
+		int box_h = ceil(line.height) + 2 * pad + 2 * t;
 		int box_x = (buffer_width - box_w) / 2;
 		int box_y = (buffer_diameter - box_h) / 2;
-		double t = arc_thickness;
 
 		// Fill box
 		cairo_rectangle(cairo, box_x, box_y, box_w, box_h);
@@ -317,7 +322,8 @@ static bool render_frame(struct swaylock_surface *surface) {
 			y = (buffer_diameter / 2) +
 				(fe.height / 2 - fe.descent);
 
-			cairo_move_to(cairo, x, y);
+			// Whole pixels keep bitmap-style fonts sharp
+			cairo_move_to(cairo, round(x), round(y));
 			cairo_show_text(cairo, text);
 			cairo_close_path(cairo);
 			cairo_new_sub_path(cairo);
@@ -338,7 +344,7 @@ static bool render_frame(struct swaylock_surface *surface) {
 				(extents.width / 2 + extents.x_bearing);
 			double y = box_y - fe.descent - 2 * t;
 			cairo_set_source_u32(cairo, state->args.colors.text.input);
-			cairo_move_to(cairo, x, y);
+			cairo_move_to(cairo, round(x), round(y));
 			cairo_show_text(cairo, clock);
 			cairo_new_sub_path(cairo);
 		}
