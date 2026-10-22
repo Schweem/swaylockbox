@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <time.h>
 #include <wayland-client.h>
 #include "cairo.h"
 #include "background-image.h"
@@ -138,8 +139,13 @@ static bool render_frame(struct swaylock_surface *surface) {
 	// determines the size/positioning of the surface
 
 	char attempts[4]; // like i3lock: count no more than 999
+	char stars[33]; // masked password, one '*' per byte
 	char *text = NULL;
 	const char *layout_text = NULL;
+
+	int arc_radius = state->args.radius * surface->scale;
+	int arc_thickness = state->args.thickness * surface->scale;
+	int box_w = arc_radius * 2;
 
 	bool draw_indicator = state->args.show_indicator &&
 		(state->auth_state != AUTH_STATE_IDLE ||
@@ -158,6 +164,26 @@ static bool render_frame(struct swaylock_surface *surface) {
 			// Caps Lock has higher priority
 			if (state->xkb.caps_lock && state->args.show_caps_lock_text) {
 				text = "Caps Lock";
+			} else if (state->password.len > 0) {
+				// Only show as many stars as fit inside the box
+				configure_font_drawing(state->test_cairo, state,
+						surface->subpixel, arc_radius);
+				cairo_text_extents_t star;
+				cairo_text_extents(state->test_cairo, "*", &star);
+				size_t fits = (box_w - 4 * arc_thickness) / star.x_advance;
+
+				size_t count = state->password.len;
+				if (count > fits) {
+					count = fits;
+				}
+				if (count > sizeof(stars) - 1) {
+					count = sizeof(stars) - 1;
+				}
+				for (size_t i = 0; i < count; i++) {
+					stars[i] = '*';
+				}
+				stars[count] = '\0';
+				text = stars;
 			} else if (state->args.show_failed_attempts &&
 					state->failed_attempts > 0) {
 				if (state->failed_attempts > 999) {
@@ -188,8 +214,6 @@ static bool render_frame(struct swaylock_surface *surface) {
 	}
 
 	// Compute the size of the buffer needed
-	int arc_radius = state->args.radius * surface->scale;
-	int arc_thickness = state->args.thickness * surface->scale;
 	int buffer_diameter = (arc_radius + arc_thickness) * 2;
 	int buffer_width = buffer_diameter;
 	int buffer_height = buffer_diameter;
@@ -262,18 +286,24 @@ static bool render_frame(struct swaylock_surface *surface) {
 	cairo_restore(cairo);
 
 	if (draw_indicator) {
-		// Fill inner circle
-		cairo_set_line_width(cairo, 0);
-		cairo_arc(cairo, buffer_width / 2, buffer_diameter / 2,
-				arc_radius - arc_thickness / 2, 0, 2 * M_PI);
-		set_color_for_state(cairo, state, &state->args.colors.inside);
-		cairo_fill_preserve(cairo);
-		cairo_stroke(cairo);
+		// One line of text tall, like a terminal input field
+		configure_font_drawing(cairo, state, surface->subpixel, arc_radius);
+		cairo_font_extents_t line;
+		cairo_font_extents(cairo, &line);
+		int pad = 4 * surface->scale;
+		double t = arc_thickness;
+		int box_h = ceil(line.height) + 2 * pad + 2 * t;
+		int box_x = (buffer_width - box_w) / 2;
+		int box_y = (buffer_diameter - box_h) / 2;
 
-		// Draw ring
-		cairo_set_line_width(cairo, arc_thickness);
-		cairo_arc(cairo, buffer_width / 2, buffer_diameter / 2, arc_radius,
-				0, 2 * M_PI);
+		// Fill box
+		cairo_rectangle(cairo, box_x, box_y, box_w, box_h);
+		set_color_for_state(cairo, state, &state->args.colors.inside);
+		cairo_fill(cairo);
+
+		// Border
+		cairo_set_line_width(cairo, t);
+		cairo_rectangle(cairo, box_x + t/2, box_y + t/2, box_w - t, box_h - t);
 		set_color_for_state(cairo, state, &state->args.colors.ring);
 		cairo_stroke(cairo);
 
@@ -292,70 +322,32 @@ static bool render_frame(struct swaylock_surface *surface) {
 			y = (buffer_diameter / 2) +
 				(fe.height / 2 - fe.descent);
 
-			cairo_move_to(cairo, x, y);
+			// Whole pixels keep bitmap-style fonts sharp
+			cairo_move_to(cairo, round(x), round(y));
 			cairo_show_text(cairo, text);
 			cairo_close_path(cairo);
 			cairo_new_sub_path(cairo);
 		}
 
-		// Typing indicator: Highlight random part on keypress
-		if (state->input_state == INPUT_STATE_LETTER ||
-				state->input_state == INPUT_STATE_BACKSPACE) {
-			double highlight_start = state->highlight_start * (M_PI / 1024.0);
-			cairo_arc(cairo, buffer_width / 2, buffer_diameter / 2,
-					arc_radius, highlight_start,
-					highlight_start + TYPE_INDICATOR_RANGE);
-			if (state->input_state == INPUT_STATE_LETTER) {
-				if (state->xkb.caps_lock && state->args.show_caps_lock_indicator) {
-					cairo_set_source_u32(cairo, state->args.colors.caps_lock_key_highlight);
-				} else {
-					cairo_set_source_u32(cairo, state->args.colors.key_highlight);
-				}
-			} else {
-				if (state->xkb.caps_lock && state->args.show_caps_lock_indicator) {
-					cairo_set_source_u32(cairo, state->args.colors.caps_lock_bs_highlight);
-				} else {
-					cairo_set_source_u32(cairo, state->args.colors.bs_highlight);
-				}
-			}
-			cairo_stroke(cairo);
-
-			// Draw borders
-			double inner_radius = buffer_diameter / 2.0 - arc_thickness * 1.5;
-			double outer_radius = buffer_diameter / 2.0 - arc_thickness / 2.0;
-
-			cairo_set_line_width(cairo, 2.0 * surface->scale);
-			cairo_set_source_u32(cairo, state->args.colors.separator);
-			cairo_move_to(cairo,
-				buffer_width / 2.0 + cos(highlight_start) * inner_radius,
-				buffer_diameter / 2.0 + sin(highlight_start) * inner_radius
-			);
-			cairo_line_to(cairo,
-				buffer_width / 2.0 + cos(highlight_start) * outer_radius,
-				buffer_diameter / 2.0 + sin(highlight_start) * outer_radius
-			);
-			cairo_stroke(cairo);
-
-			cairo_move_to(cairo,
-				buffer_width / 2.0 + cos(highlight_start + TYPE_INDICATOR_RANGE) * inner_radius,
-				buffer_diameter / 2.0 + sin(highlight_start + TYPE_INDICATOR_RANGE) * inner_radius
-			);
-			cairo_line_to(cairo,
-				buffer_width / 2.0 + cos(highlight_start + TYPE_INDICATOR_RANGE) * outer_radius,
-				buffer_diameter / 2.0 + sin(highlight_start + TYPE_INDICATOR_RANGE) * outer_radius
-			);
-			cairo_stroke(cairo);
+		// Clock above the box
+		char clock[6];
+		time_t now = time(NULL);
+		struct tm tm;
+		localtime_r(&now, &tm);
+		strftime(clock, sizeof(clock), "%H:%M", &tm);
+		{
+			cairo_text_extents_t extents;
+			cairo_font_extents_t fe;
+			cairo_text_extents(cairo, clock, &extents);
+			cairo_font_extents(cairo, &fe);
+			double x = (buffer_width / 2) -
+				(extents.width / 2 + extents.x_bearing);
+			double y = box_y - fe.descent - 2 * t;
+			cairo_set_source_u32(cairo, state->args.colors.text.input);
+			cairo_move_to(cairo, round(x), round(y));
+			cairo_show_text(cairo, clock);
+			cairo_new_sub_path(cairo);
 		}
-
-		// Draw inner + outer border of the circle
-		set_color_for_state(cairo, state, &state->args.colors.line);
-		cairo_set_line_width(cairo, 2.0 * surface->scale);
-		cairo_arc(cairo, buffer_width / 2, buffer_diameter / 2,
-				arc_radius - arc_thickness / 2, 0, 2 * M_PI);
-		cairo_stroke(cairo);
-		cairo_arc(cairo, buffer_width / 2, buffer_diameter / 2,
-				arc_radius + arc_thickness / 2, 0, 2 * M_PI);
-		cairo_stroke(cairo);
 
 		// display layout text separately
 		if (layout_text) {
